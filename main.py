@@ -1,46 +1,63 @@
-import speech_recognition as sr
-import subprocess
+import whisper as openai_whisper
+import os
+import pyaudio
+import wave
+import threading
+import sys
+import queue
 
-# Funktion zum Ausführen des PowerShell-Befehls
-def run_powershell_command(command):
-    try:
-        result = subprocess.run(["powershell.exe", "-Command", command], capture_output=True, text=True, encoding='utf-8')
-        if result.stdout:
-            print("Ausgabe:")
-            print(result.stdout.strip())
-        if result.stderr:
-            print("Fehlermeldung:")
-            print(result.stderr.strip())
-        if not result.stdout and not result.stderr:
-            print("Keine Ausgabe.")
-    except subprocess.CalledProcessError as e:
-        print("Fehler beim Ausführen des Befehls:")
-        print(e.stderr)
+# Record audio
+def record_audio(filename, stop_event, audio_queue):
+    FORMAT = pyaudio.paInt16
+    CHANNELS = 1
+    RATE = 16000
+    CHUNK = 1024
 
+    audio = pyaudio.PyAudio()
+    stream = audio.open(format=FORMAT, channels=CHANNELS,
+                        rate=RATE, input=True,
+                        frames_per_buffer=CHUNK)
 
-# Hauptprogramm
+    print("Recording... Press return key to stop.")
+
+    while not stop_event.is_set():
+        data = stream.read(CHUNK)
+        audio_queue.put(data)
+
+    print("Finished recording")
+
+    stream.stop_stream()
+    stream.close()
+    audio.terminate()
+
+    with wave.open(filename, 'wb') as wf:
+        wf.setnchannels(CHANNELS)
+        wf.setsampwidth(audio.get_sample_size(FORMAT))
+        wf.setframerate(RATE)
+        wf.writeframes(b''.join(list(audio_queue.queue)))
+
+# Transcribe audio
+def transcribe_audio(filename):
+    with open(filename, "rb") as audio_file:
+        transcript = whisper.transcribe(filename)
+        return transcript["text"]
+
+# Main function
 def main():
-    # Initialisierung des Spracherkenners
-    r = sr.Recognizer()
+    whisper = openai_whisper.load_model("base")
+    audio_filename = "recorded_audio.wav"
+    stop_event = threading.Event()
+    audio_queue = queue.Queue()
 
-    # Aufnehmen des Spracheingabe des Benutzers
-    with sr.Microphone() as source:
-        print("Sage einen PowerShell-Befehl...")
-        audio = r.listen(source)
+    record_thread = threading.Thread(target=record_audio, args=(audio_filename, stop_event, audio_queue))
+    record_thread.start()
 
-    try:
-        # Spracherkennung
-        command = r.recognize_google(audio)
-        print("Erkannter Befehl: " + command)
+    input("Press the return key to stop recording...\n")
+    stop_event.set()
+    record_thread.join()
 
-        # Ausführen des PowerShell-Befehls
-        command = "Start-Process -FilePath 'C:\\Program Files\\Mozilla Firefox\\firefox.exe'"
-        run_powershell_command(command)
-
-    except sr.UnknownValueError:
-        print("Konnte den Befehl nicht verstehen.")
-    except sr.RequestError as e:
-        print("Fehler bei der Spracherkennung:", str(e))
+    transcription = transcribe_audio(audio_filename)
+    print("Transcription:", transcription)
 
 if __name__ == "__main__":
     main()
